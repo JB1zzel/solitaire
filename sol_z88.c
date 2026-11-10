@@ -43,6 +43,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include "sol_core.h"
+#ifdef WITH_PICTURE
+#include <graphics.h>
+#include <arch/z88/z88.h>
+#include "jester.h"
+#endif
 
 /* ---------------- text screen ----------------
  * The display is OZ's ordinary text screen: no graphics map.  Cards are
@@ -62,7 +67,11 @@
 #define COL_X0     6                /* first tableau column          */
 #define COL_PITCH  6                /* cells between columns         */
 #define VIEW_ROWS  8                /* rows of cards visible         */
-#define INFO_X    50                /* right-hand info panel         */
+#ifdef WITH_PICTURE
+#define INFO_X    48                /* right-hand info panel         */
+#else
+#define INFO_X    50
+#endif
 #define INFO_W    22
 
 static const unsigned char panel_row[6] = { 0, 1, 3, 4, 5, 6 };
@@ -125,7 +134,7 @@ static void put_str(int x, int y, const char *s)
         put_ch(x++, y, c);
     }
 }
-static void utoa10(unsigned long v, char *out)
+static void utoa10(unsigned v, char *out)
 {
     char tmp[12];
     int i = 0, j = 0;
@@ -135,7 +144,7 @@ static void utoa10(unsigned long v, char *out)
     out[j] = 0;
 }
 /* grey digits: cell codes 0x10..0x19 are '0'..'9' sent with the grey attribute */
-static void put_gnum(int x, int y, unsigned long v)
+static void put_gnum(int x, int y, unsigned v)
 {
     char num[12];
     int i;
@@ -144,7 +153,7 @@ static void put_gnum(int x, int y, unsigned long v)
         put_ch(x + i, y, (unsigned char)(0x10 + (num[i] - '0')));
 }
 
-static void put_num(int x, int y, unsigned long v)
+static void put_num(int x, int y, unsigned v)
 {
     char num[12];
     utoa10(v, num);
@@ -214,6 +223,89 @@ static void cls_screen(void)
     memset(sh, ' ', CELLS);
 }
 
+/* ---------------- picture window + text window ----------------
+ * The 64x64 jester lives in a graphics map window of its own at the left.
+ * The text window (window 1, where the whole game is drawn) is moved to the
+ * right of it with a raw OZ sequence, as the SimCity port for the Z88 does.
+ *
+ * Build options (defaults are what worked in z88_pic_probe.c):
+ *   -DTXT_X=22 -DTXT_W=70   text window start column and width
+ *   -DWIN_W=64 -DWIN_D=8    picture window size
+ *   -DTEXT_FIRST            define the text window before opening the map
+ *   -DNO_CLOSE              do not closegfx() on exit
+ *   -DWITH_PICTURE          enable the jester map window (off by default) */
+#ifndef TXT_X
+#define TXT_X 22
+#endif
+#ifndef TXT_W
+#define TXT_W 70
+#endif
+#ifndef WIN_X
+#define WIN_X 80
+#endif
+#ifndef WIN_W
+#define WIN_W 64
+#endif
+#ifndef WIN_D
+#define WIN_D 8
+#endif
+#ifndef WIN_TYPE
+#define WIN_TYPE 128
+#endif
+
+#ifdef WITH_PICTURE
+static struct window gfx;
+
+static void select_text_window(void)        /* 1,'2','H','1' */
+{
+    putchar(1); putchar('2'); putchar('H'); putchar('1');
+}
+
+static void define_text_window(void)        /* 1,'7','#',1,x,y,w,d,type */
+{
+    putchar(1); putchar('7'); putchar('#'); putchar('1');
+    putchar(32 + TXT_X); putchar(32 + 0);
+    putchar(32 + TXT_W); putchar(32 + 8);
+    putchar(128);
+}
+
+static void plot_picture(void)
+{
+    int x, y;
+    for (y = 0; y < 64; y++)
+        for (x = 0; x < 64; x++)
+            if (jester[y][x >> 3] & (0x80 >> (x & 7)))
+                plot(x, y);
+}
+
+/* open the map ONCE; later repaints only clear and replot it */
+static void open_picture(void)
+{
+    memset(&gfx, 0, sizeof gfx);
+    gfx.number = '2';
+    gfx.x      = WIN_X;
+    gfx.y      = 0;
+    gfx.width  = WIN_W;
+    gfx.depth  = WIN_D;
+    gfx.type   = WIN_TYPE;
+    gfx.graph  = 1;
+    window(&gfx);
+    clg();
+    plot_picture();
+}
+
+static void draw_picture(void)
+{
+    clga(0, 0, 63, 63);
+    plot_picture();
+}
+#else
+static void select_text_window(void) {}
+static void define_text_window(void) {}
+static void open_picture(void) {}
+static void draw_picture(void) {}
+#endif
+
 static void screen_modes(void)
 {
     define_udgs();
@@ -223,6 +315,15 @@ static void screen_modes(void)
 
 static void screen_init(void)
 {
+#ifdef TEXT_FIRST
+    define_text_window();
+    select_text_window();
+    open_picture();
+#else
+    open_picture();
+    define_text_window();
+    select_text_window();
+#endif
     screen_modes();
     cls_screen();
     clear_bk();
@@ -235,7 +336,7 @@ static int last_panel = 1;                /* panel slot to return to            
 static char msg[64];
 static const char win_msg[] = "YOU WIN! N = new game";
 static const char shuf_msg[] = "SHUFFLING";
-static unsigned long chosen_seed = 1;
+static unsigned chosen_seed = 1;
 static unsigned idle_count;
 
 /* the pile behind a slot number (slots 0..5 match the pile enum) */
@@ -347,9 +448,9 @@ static void draw_column(int col)
     for (k = top; k < n && k - top < VIEW_ROWS; k++)
         put_card(x, k - top, peek_at(p, k));
     /* how many cards are hidden: above on the top row, below on the bottom row */
-    if (top > 0)             put_gnum(x + CARD_W + 1, 0, (unsigned long)top);
+    if (top > 0)             put_gnum(x + CARD_W + 1, 0, (unsigned)top);
     if (top < max_top(p))    put_gnum(x + CARD_W + 1, VIEW_ROWS - 1,
-                                     (unsigned long)(max_top(p) - top));
+                                     (unsigned)(max_top(p) - top));
 }
 
 /* ---------------- cursor positions ---------------- */
@@ -396,7 +497,7 @@ static void draw_info(void)
     int line, pos, len = (int)strlen(msg);
 
     put_str(INFO_X, 0, "SCORE");
-    put_num(INFO_X, 1, (unsigned long)(score < 0 ? 0 : score));
+    put_num(INFO_X, 1, (unsigned)(score < 0 ? 0 : score));
     put_str(INFO_X, 2, "SEED");
     put_ch(INFO_X, 3, '#');
     put_num(INFO_X + 1, 3, current_seed);
@@ -458,6 +559,16 @@ static unsigned char read_sec(void)
 #endasm
 }
 
+/* OZ tells the application, through these two hooks, when something happened
+ * while it was inside getk(): redrawscreen() when the screen was overwritten
+ * (another application used it) and handlecmds() for menu commands.  The
+ * SimCity port for the Z88 uses the same hooks.  The seconds-counter check
+ * below stays as a backstop in case a redraw request is ever missed. */
+static volatile unsigned char need_redraw;
+
+void redrawscreen(void) { need_redraw = 1; }
+void handlecmds(int cmd) { (void)cmd; }
+
 static int poll_key(void)
 {
     /* Blink TIM1 (port $D1) counts seconds 0..59.  It is not latched, so a
@@ -467,11 +578,19 @@ static int poll_key(void)
     if (t == t2 && t < 60) {
         if (have_sec && (unsigned char)((t + 60 - last_sec) % 60) > 2) {
             if (game_active) refresh_screen();
-            else { cls_screen(); screen_modes(); }
+            else { select_text_window(); cls_screen(); screen_modes(); draw_picture(); }
         }
         last_sec = t; have_sec = 1;
     }
-    return getk();
+    {
+        int k = getk();
+        if (need_redraw) {
+            need_redraw = 0;
+            if (game_active) refresh_screen();
+            else { select_text_window(); cls_screen(); screen_modes(); draw_picture(); }
+        }
+        return k;
+    }
 }
 
 /* ---------------- input ---------------- */
@@ -504,10 +623,10 @@ static int read_key(void)
     return KEY_NONE;
 }
 
-static unsigned long random_seed(unsigned idle)
+static unsigned random_seed(unsigned idle)
 {
     unsigned v = idle * 25173u + 13849u;
-    return v ? (unsigned long)v : 1UL;
+    return v ? v : 1;
 }
 
 /* ---------------- cursor movement ---------------- */
@@ -585,7 +704,7 @@ static void shuffle_progress(int done, int total)
                     put_str(INFO_X, 6, shuf_msg); }
     else          { x = 30; y = 6; w = 20;
                     put_str(18, 6, shuf_msg); }
-    filled = (total > 0) ? (int)(((long)done * w) / total) : 0;
+    filled = (total > 0) ? (int)(((unsigned)done * w) / total) : 0;
     for (i = 0; i < w; i++)
         put_ch(x + i, y, i < filled ? G_BLOCK : '.');
     flush();
@@ -643,10 +762,10 @@ static int prompt_new_game(void)
             if (len == 0) {
                 chosen_seed = random_seed(idle_count);
             } else {
-                unsigned long v = 0;
+                unsigned v = 0;
                 int i;
                 for (i = 0; i < len; i++)
-                    v = v * 10 + (unsigned long)(buf[i] - '0');
+                    v = v * 10 + (unsigned)(buf[i] - '0');
                 chosen_seed = v;
             }
             return 1;
@@ -656,13 +775,14 @@ static int prompt_new_game(void)
         if ((k == 8 || k == 127) && len > 0) {
             buf[--len] = 0;
         } else if (k >= '0' && k <= '9' && len < 5) {
-            unsigned long v = 0;
+            unsigned v = 0;
             int i;
-            buf[len] = (char)k; buf[len + 1] = 0;
-            for (i = 0; i <= len; i++)
-                v = v * 10 + (unsigned long)(buf[i] - '0');
-            if (v > 65535UL) buf[len] = 0;
-            else len++;
+            for (i = 0; i < len; i++)
+                v = v * 10 + (unsigned)(buf[i] - '0');
+            if (len < 4 || v < 6553 || (v == 6553 && k <= '5')) {
+                buf[len] = (char)k; buf[len + 1] = 0;
+                len++;
+            }
         }
     }
 }
@@ -673,8 +793,10 @@ static int prompt_new_game(void)
  * gives the player a way to recover it. */
 static void refresh_screen(void)
 {
+    select_text_window();
     cls_screen();                   /* clear first, then redefine: no half-defined glyphs on show */
     screen_modes();
+    draw_picture();
     render();
 }
 
@@ -834,4 +956,7 @@ void main()
     shuffle_hook = NULL;
     clear_bk();
     flush();
+#if defined(WITH_PICTURE) && !defined(NO_CLOSE)
+    closegfx(&gfx);
+#endif
 }

@@ -54,7 +54,7 @@ typedef struct pile {
 /* ---------------- shared state ---------------- */
 extern pile *piles[PILE_COUNT];
 extern int   score;
-extern unsigned long current_seed;
+extern unsigned current_seed;
 /* optional: called now and then while shuffling (done, total) */
 extern void (*shuffle_hook)(int done, int total);
 
@@ -70,7 +70,7 @@ card *peek_at(pile *p, int idx);
 card *peek_last(pile *p);
 
 void core_init(void);   /* call once at start; makes re-entry safe */
-void prepare_game(unsigned long seed);
+void prepare_game(unsigned seed);
 void replay_game(void);
 void free_game(void);
 

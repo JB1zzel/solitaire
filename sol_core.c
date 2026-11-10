@@ -15,7 +15,7 @@
 
 pile *piles[PILE_COUNT];
 int   score;
-unsigned long current_seed = 0;
+unsigned current_seed = 0;
 void (*shuffle_hook)(int done, int total) = NULL;
 
 static pile          pile_store[PILE_COUNT];
@@ -573,7 +573,7 @@ void core_init(void)
     shuffle_hook = NULL;
 }
 
-void prepare_game(unsigned long seed)
+void prepare_game(unsigned seed)
 {
     unsigned char order[52];
     int i, j, s, r;
