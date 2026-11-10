@@ -1,0 +1,15 @@
+*.63
+*.epr
+*.bin
+*_BSS.bin
+*_DATA.bin
+*_bss_fardata.bin
+*.tap
+*.nex
+v1/
+v2/
+a
+solitaire
+probe
+picprobe
+tprobe
