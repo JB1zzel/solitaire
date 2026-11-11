@@ -25,7 +25,7 @@
 
 #define HELP1 "Klondike solitaire"
 #define HELP2 "QAOP move, SPACE pick/drop"
-#define HELP3 "F auto, Z undo"
+#define HELP3 "F auto, Z undo, G style"
 #define HELP4 "N new game, ESC quit"
 #define HELP5 ""
 #define HELP6 ""
@@ -174,23 +174,36 @@ static void attr(int on, int which)             /* 1,'2','+'/'-',attr */
     putchar(1); putchar('2'); putchar(on ? '+' : '-'); putchar(which);
 }
 
+/* Card style (toggled with G):
+ *   0 = red suits in GREY, face-down cards with an "n" border
+ *   1 = black cards in REVERSE video, face-down cards plain checker  */
+static int style;
+
 static void define_udgs(void)
 {
     int i, r;
     for (i = 0; i < UDG_COUNT; i++) {
         putchar(1); putchar(128 + 10); putchar('='); putchar(UDG_BASE + i);
-        for (r = 0; r < 8; r++) putchar(udg[i][r] | 0x80);   /* top bit set */
+        for (r = 0; r < 8; r++) {
+            unsigned char b = udg[i][r];
+            if (style && i >= G_BACK - 0x80)         /* plain card back */
+                b = (r & 1) ? 0x2A : 0x15;
+            putchar(b | 0x80);                       /* top bit set */
+        }
     }
 }
 
-static int grey_on;                 /* grey attribute state while sending a row */
+static int grey_on, inv_on;         /* attribute state while sending a row */
 
 static void emit(unsigned char c)
 {
-    int grey = 0;
-    if (c >= 0xA0)      { grey = 1; c = (unsigned char)(c & 0x7F); }
-    else if (c >= 0x90) { grey = 1; c = (unsigned char)(c - 0x10); }
+    int alt = 0, grey = 0, inv;
+    if (c >= 0xA0)      { alt = 1; c = (unsigned char)(c & 0x7F); }
+    else if (c >= 0x90) { alt = 1; c = (unsigned char)(c - 0x10); }
     else if (c >= 0x10 && c <= 0x19) { grey = 1; c = (unsigned char)('0' + (c - 0x10)); }
+    inv = alt && style;                         /* style 1: reverse video */
+    if (alt && !style) grey = 1;                /* style 0: grey          */
+    if (inv != inv_on) { attr(inv, 'R'); inv_on = inv; }
     if (grey != grey_on) { attr(grey, 'G'); grey_on = grey; }
     if (c >= 0x80) {
         putchar(1); putchar('2'); putchar('?');
@@ -211,8 +224,9 @@ static void flush(void)
             if (p[x] != q[x]) { if (a < 0) a = x; b = x; }
         if (a < 0) continue;
         at(a, y);
-        grey_on = 0;
+        grey_on = 0; inv_on = 0;
         for (x = a; x <= b; x++) emit(p[x]);
+        if (inv_on) attr(0, 'R');
         if (grey_on) attr(0, 'G');
         memcpy(q + a, p + a, (size_t)(b - a + 1));
     }
@@ -372,8 +386,9 @@ static unsigned char suit_code(int suit)
 
 static void put_suit(int x, int y, unsigned char g, int black)
 {
-    put_ch(x, y, black ? g : greyed(g));
-    put_ch(x + 1, y, black ? (unsigned char)(g + 1) : greyed((unsigned char)(g + 1)));
+    int alt = style ? black : !black;       /* style 0: red grey; style 1: black reversed */
+    put_ch(x, y, alt ? greyed(g) : g);
+    put_ch(x + 1, y, alt ? greyed((unsigned char)(g + 1)) : (unsigned char)(g + 1));
 }
 
 /* face-down card: an "n" shape (top and both sides, no bottom) filled with a pattern */
@@ -395,7 +410,7 @@ static void put_card(int x, int y, card *c)
     } else {
         int black = is_black_card(c);
         unsigned char r = rank_code(c->rank);
-        put_ch(x, y, r);                       /* rank stays normal: only the suit is grey */
+        put_ch(x, y, (style && black) ? greyed(r) : r);   /* style 0: only the suit is grey */
         put_suit(x + 1, y, suit_code(c->suit), black);
     }
 }
@@ -601,7 +616,7 @@ static int poll_key(void)
 
 /* ---------------- input ---------------- */
 enum { KEY_NONE, KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN,
-       KEY_SPACE, KEY_NEW, KEY_UNDO, KEY_AUTO, KEY_REDRAW, KEY_QUIT };
+       KEY_SPACE, KEY_NEW, KEY_UNDO, KEY_AUTO, KEY_REDRAW, KEY_STYLE, KEY_QUIT };
 
 static void wait_release(void) { while (poll_key() != 0) ; }
 
@@ -624,6 +639,7 @@ static int read_key(void)
     case 'z': case 'Z': return KEY_UNDO;
     case 'f': case 'F': return KEY_AUTO;
     case 13: case 10:   return KEY_REDRAW;
+    case 'g': case 'G': return KEY_STYLE;
     case 27:            return KEY_QUIT;
     }
     return KEY_NONE;
@@ -737,6 +753,7 @@ static void show_title(void)
     put_str(44, 2, "Z   UNDO");
     put_str(44, 3, "N   NEW / REPLAY / SEED");
     put_str(44, 4, "ESC QUIT  ENTER REDRAW");
+    put_str(10, 6, "G       CARD STYLE");
 
     put_ch(10, 5, G_CURSOR);  put_str(12, 5, "CURSOR");
     put_ch(21, 5, G_CHOSEN); put_str(23, 5, "PICKED UP");
@@ -820,6 +837,7 @@ void main()
     core_init();
     view_col = -1; view_top = 0;
     game_active = 0; have_sec = 0;
+    style = 0;
     bar_game = 0;
     last_panel = 1;
     idle_count = 0;
@@ -855,6 +873,13 @@ void main()
         int key = read_key();
 
         if (key == KEY_QUIT) break;
+
+        if (key == KEY_STYLE) {
+            style = !style;
+            strcpy(msg, style ? "Cards: reverse." : "Cards: grey.");
+            refresh_screen();
+            continue;
+        }
 
         if (key == KEY_REDRAW) {
             refresh_screen();
