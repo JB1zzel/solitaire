@@ -2,7 +2,8 @@
  *
  * Display: OZ's ordinary text screen, 80 x 8 characters used.  No graphics
  * map.  Cards are rank + a two-character suit drawn with user-defined
- * characters; black suits are in reverse video.  A graphics-map version is
+ * characters; red suits (hearts, diamonds) are drawn in grey, black suits in
+ * normal text.  A graphics-map version is
  * kept as sol_z88_graphics.c.
  *
  * Layout (character columns):
@@ -53,11 +54,11 @@
  * The display is OZ's ordinary text screen: no graphics map.  Cards are
  * drawn with user-defined characters (1,138,'=',code,rows) and printed with
  * 1,'2','?',code.  Each suit is two characters wide (left + right half).
- * Black suits use reverse video.
+ * Red suits are drawn in grey (the rank stays normal).
  *
  * bk[] holds what we want on screen, sh[] what we last sent.  Codes in a
  * cell:  0x20..0x7E  plain ASCII          0x80..0x8F  user glyph k = c-0x80
- *        0xA0..0xFE  ASCII, reversed      0x90..0x9F  user glyph, reversed */
+ *        0xA0..0xFE  ASCII, grey          0x90..0x9F  user glyph, grey */
 #define GRID_W   80
 #define GRID_H    8
 #define CELLS   (GRID_W * GRID_H)
@@ -85,8 +86,8 @@ static const unsigned char panel_row[6] = { 0, 1, 3, 4, 5, 6 };
 #define G_CHOSEN  0x8A              /* small ring: the picked-up card */
 #define G_BOTH    0x8B              /* solid disc: cursor on picked-up card */
 #define G_BLOCK   0x8C              /* progress bar */
-#define G_BACK    0x8D              /* face-down card */
-#define UDG_COUNT 14                /* <= 16: safe on an unexpanded Z88 */
+#define G_BACK    0x8D              /* face-down card: left, middle (+1), right (+2) */
+#define UDG_COUNT 16                /* <= 16: safe on an unexpanded Z88 */
 #define UDG_BASE  64                /* first character code we redefine */
 
 /* 6x8 cells; bit 5 = left pixel.  Row 0 is left blank so stacked cards
@@ -105,14 +106,17 @@ static const unsigned char udg[UDG_COUNT][8] = {
     { 0x00,0x0C,0x12,0x12,0x12,0x12,0x0C,0x00 },   /* ring      */
     { 0x00,0x0C,0x1E,0x1E,0x1E,0x1E,0x0C,0x00 },   /* disc      */
     { 0x3F,0x3F,0x3F,0x3F,0x3F,0x3F,0x3F,0x3F },   /* block     */
-    { 0x15,0x2A,0x15,0x2A,0x15,0x2A,0x15,0x2A }    /* card back */
+    { 0x00,0x3F,0x35,0x2A,0x35,0x2A,0x35,0x2A },   /* back left:  top + left side  */
+    { 0x00,0x3F,0x15,0x2A,0x15,0x2A,0x15,0x2A },   /* back mid:   top              */
+    { 0x00,0x3F,0x15,0x2B,0x15,0x2B,0x15,0x2B }    /* back right: top + right side */
 };
 
-/* black suits are shown in reverse video */
-static unsigned char inverse(unsigned char c)
+/* red cards are drawn in GREY (black cards in normal text): codes 0xA0+ are
+ * grey ASCII, 0x90..0x9F grey user glyphs */
+static unsigned char greyed(unsigned char c)
 {
     if (c >= 32 && c < 127)          return (unsigned char)(c | 0x80);
-    if (c >= G_HEART && c <= G_BACK) return (unsigned char)(c + 0x10);
+    if (c >= G_HEART && c <= G_BACK + 2) return (unsigned char)(c + 0x10);
     return c;
 }
 
@@ -181,13 +185,12 @@ static void define_udgs(void)
 
 static int grey_on;                 /* grey attribute state while sending a row */
 
-static void emit(unsigned char c, int *inv)
+static void emit(unsigned char c)
 {
-    int want = 0, grey = 0;
-    if (c >= 0xA0)      { want = 1; c = (unsigned char)(c & 0x7F); }
-    else if (c >= 0x90) { want = 1; c = (unsigned char)(c - 0x10); }
+    int grey = 0;
+    if (c >= 0xA0)      { grey = 1; c = (unsigned char)(c & 0x7F); }
+    else if (c >= 0x90) { grey = 1; c = (unsigned char)(c - 0x10); }
     else if (c >= 0x10 && c <= 0x19) { grey = 1; c = (unsigned char)('0' + (c - 0x10)); }
-    if (want != *inv) { attr(want, 'R'); *inv = want; }
     if (grey != grey_on) { attr(grey, 'G'); grey_on = grey; }
     if (c >= 0x80) {
         putchar(1); putchar('2'); putchar('?');
@@ -200,7 +203,7 @@ static void emit(unsigned char c, int *inv)
 /* send only what changed: per row, from the first to the last difference */
 static void flush(void)
 {
-    int x, y, a, b, inv;
+    int x, y, a, b;
     for (y = 0; y < GRID_H; y++) {
         unsigned char *p = bk + y * GRID_W, *q = sh + y * GRID_W;
         a = -1; b = -1;
@@ -208,9 +211,8 @@ static void flush(void)
             if (p[x] != q[x]) { if (a < 0) a = x; b = x; }
         if (a < 0) continue;
         at(a, y);
-        inv = 0; grey_on = 0;
-        for (x = a; x <= b; x++) emit(p[x], &inv);
-        if (inv) attr(0, 'R');
+        grey_on = 0;
+        for (x = a; x <= b; x++) emit(p[x]);
         if (grey_on) attr(0, 'G');
         memcpy(q + a, p + a, (size_t)(b - a + 1));
     }
@@ -370,8 +372,16 @@ static unsigned char suit_code(int suit)
 
 static void put_suit(int x, int y, unsigned char g, int black)
 {
-    put_ch(x, y, black ? inverse(g) : g);
-    put_ch(x + 1, y, black ? inverse((unsigned char)(g + 1)) : (unsigned char)(g + 1));
+    put_ch(x, y, black ? g : greyed(g));
+    put_ch(x + 1, y, black ? (unsigned char)(g + 1) : greyed((unsigned char)(g + 1)));
+}
+
+/* face-down card: an "n" shape (top and both sides, no bottom) filled with a pattern */
+static void put_back(int x, int y)
+{
+    put_ch(x, y, G_BACK);
+    put_ch(x + 1, y, G_BACK + 1);
+    put_ch(x + 2, y, G_BACK + 2);
 }
 
 static void put_card(int x, int y, card *c)
@@ -381,13 +391,11 @@ static void put_card(int x, int y, card *c)
         put_ch(x + 1, y, ' ');
         put_ch(x + 2, y, ']');
     } else if (!c->revealed) {
-        put_ch(x, y, G_BACK);
-        put_ch(x + 1, y, G_BACK);
-        put_ch(x + 2, y, G_BACK);
+        put_back(x, y);
     } else {
         int black = is_black_card(c);
         unsigned char r = rank_code(c->rank);
-        put_ch(x, y, black ? inverse(r) : r);
+        put_ch(x, y, r);                       /* rank stays normal: only the suit is grey */
         put_suit(x + 1, y, suit_code(c->suit), black);
     }
 }
@@ -520,9 +528,7 @@ static void render(void)
     adjust_view();
 
     if (piles[P_DECK]->num_cards > 0) {
-        put_ch(PANEL_X, panel_row[0], G_BACK);
-        put_ch(PANEL_X + 1, panel_row[0], G_BACK);
-        put_ch(PANEL_X + 2, panel_row[0], G_BACK);
+        put_back(PANEL_X, panel_row[0]);
     } else {
         put_card(PANEL_X, panel_row[0], NULL);
     }
